@@ -57,6 +57,7 @@ class ESheepView: NSView {
     
     func setFlipped(_ flipped: Bool) {
         self.isFlippedImage = flipped
+        print("ESheepView: Set flipped to \(flipped)")
         needsDisplay = true
     }
     
@@ -68,7 +69,10 @@ class ESheepView: NSView {
             return 
         }
         
-        print("ESheepView: Drawing frame \(currentFrame) from sprite \(sprite.size)")
+        // Only log occasionally to reduce console spam
+        if currentFrame == 0 {
+            print("ESheepView: Drawing with flip=\(isFlippedImage)")
+        }
         
         let context = NSGraphicsContext.current?.cgContext
         context?.saveGState()

@@ -16,7 +16,7 @@ class ESheep {
     private var animationTimer: Timer?
     
     private var position: NSPoint = NSPoint(x: 100, y: 100)
-    private var isFlipped: Bool = false
+    private var isFlipped: Bool = true  // Start flipped since default movement is rightward
     private var isDragging: Bool = false
     
     private var tilesX: Int = 16
@@ -100,6 +100,10 @@ class ESheep {
         // Start with walk animation (use default if no animations loaded from XML)
         let animationId = animations.isEmpty ? "0" : animations.keys.first ?? "0"
         print("ESheep: Starting animation with ID: \(animationId)")
+        
+        // Apply initial flip state (facing right)
+        sheepView.setFlipped(isFlipped)
+        
         startAnimation(withId: animationId)
     }
     
@@ -187,9 +191,9 @@ class ESheep {
         
         if !isDragging {
             if isFlipped {
-                position.x -= moveX
+                position.x += moveX  // When flipped (facing right), move right
             } else {
-                position.x += moveX
+                position.x -= moveX  // When not flipped (facing left), move left
             }
             position.y += moveY
             
@@ -247,6 +251,7 @@ class ESheep {
     private func handleFlip() {
         isFlipped = !isFlipped
         sheepView.setFlipped(isFlipped)
+        print("ESheep: Flipped to \(isFlipped ? "right" : "left")")
     }
     
     private func updateWindowPosition() {
