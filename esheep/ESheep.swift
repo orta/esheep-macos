@@ -1,0 +1,292 @@
+//
+//  ESheep.swift
+//  esheep
+//
+//  Main sheep controller class
+//
+
+import Cocoa
+
+class ESheep {
+    private var window: ESheepWindow!
+    private var sheepView: ESheepView!
+    private var animations: [String: ESheepAnimation] = [:]
+    private var currentAnimation: ESheepAnimation?
+    private var currentAnimationStep: Int = 0
+    private var animationTimer: Timer?
+    
+    private var position: NSPoint = NSPoint(x: 100, y: 100)
+    private var isFlipped: Bool = false
+    private var isDragging: Bool = false
+    
+    private var tilesX: Int = 16
+    private var tilesY: Int = 11
+    private var frameWidth: CGFloat = 40
+    private var frameHeight: CGFloat = 40
+    
+    init() {
+        setupWindow()
+        setupView()
+        loadAnimations()
+    }
+    
+    private func setupWindow() {
+        let frame = NSRect(x: position.x, y: position.y, width: frameWidth, height: frameHeight)
+        window = ESheepWindow(contentRect: frame)
+        window.contentView = NSView(frame: NSRect(origin: .zero, size: frame.size))
+    }
+    
+    private func setupView() {
+        sheepView = ESheepView(frame: NSRect(x: 0, y: 0, width: frameWidth, height: frameHeight))
+        
+        sheepView.onMouseDown = { [weak self] in
+            self?.handleMouseDown()
+        }
+        
+        sheepView.onMouseDragged = { [weak self] screenLocation in
+            self?.handleMouseDragged(to: screenLocation)
+        }
+        
+        sheepView.onMouseUp = { [weak self] in
+            self?.handleMouseUp()
+        }
+        
+        window.contentView?.addSubview(sheepView)
+    }
+    
+    private func loadAnimations() {
+        let loader = ESheepAnimationLoader()
+        
+        // Try to load from XML first
+        loader.loadAnimations { [weak self] result in
+            switch result {
+            case .success(let data):
+                print("ESheep: Successfully loaded XML data")
+                self?.setupWithLoadedData(animations: [:], sprite: data.sprite, tilesX: data.tilesX, tilesY: data.tilesY)
+            case .failure(let error):
+                print("ESheep: Failed to load XML: \(error.localizedDescription)")
+                // Fall back to default animations
+                let fallbackResult = loader.loadDefaultAnimations()
+                print("ESheep: Using fallback animations")
+                self?.setupWithLoadedData(animations: fallbackResult.animations, sprite: fallbackResult.sprite, tilesX: fallbackResult.tilesX, tilesY: fallbackResult.tilesY)
+            }
+        }
+    }
+    
+    private func setupWithLoadedData(animations: [String: ESheepAnimation], sprite: NSImage?, tilesX: Int, tilesY: Int) {
+        print("ESheep: Setting up with sprite: \(sprite?.size ?? CGSize.zero), tiles: \(tilesX)x\(tilesY)")
+        
+        self.animations = animations
+        self.tilesX = tilesX
+        self.tilesY = tilesY
+        
+        if let sprite = sprite {
+            print("ESheep: Using loaded sprite image")
+            sheepView.setSpriteImage(sprite, tilesX: tilesX, tilesY: tilesY)
+            frameWidth = sprite.size.width / CGFloat(tilesX)
+            frameHeight = sprite.size.height / CGFloat(tilesY)
+            
+            print("ESheep: Frame size: \(frameWidth)x\(frameHeight)")
+            
+            // Update window and view size
+            window.setContentSize(NSSize(width: frameWidth, height: frameHeight))
+            sheepView.setFrameSize(NSSize(width: frameWidth, height: frameHeight))
+        } else {
+            print("ESheep: No sprite available, creating placeholder")
+            // Create a placeholder image if sprite is not available
+            createPlaceholderSprite()
+        }
+        
+        // Start with walk animation (use default if no animations loaded from XML)
+        let animationId = animations.isEmpty ? "0" : animations.keys.first ?? "0"
+        print("ESheep: Starting animation with ID: \(animationId)")
+        startAnimation(withId: animationId)
+    }
+    
+    private func createPlaceholderSprite() {
+        print("ESheep: Creating placeholder sprite")
+        // Create a simple colored rectangle as placeholder
+        let image = NSImage(size: NSSize(width: 640, height: 440))
+        image.lockFocus()
+        
+        // Fill with a bright background so we can see it
+        NSColor.red.setFill()
+        NSRect(x: 0, y: 0, width: 640, height: 440).fill()
+        
+        for row in 0..<tilesY {
+            for col in 0..<tilesX {
+                let rect = NSRect(x: CGFloat(col) * 40, y: CGFloat(row) * 40, width: 40, height: 40)
+                let hue = CGFloat(row * tilesX + col) / CGFloat(tilesX * tilesY)
+                NSColor(hue: hue, saturation: 0.7, brightness: 0.8, alpha: 1.0).setFill()
+                rect.fill()
+                
+                NSColor.white.setStroke()
+                let path = NSBezierPath(rect: rect)
+                path.lineWidth = 2
+                path.stroke()
+            }
+        }
+        
+        image.unlockFocus()
+        print("ESheep: Placeholder created with size: \(image.size)")
+        sheepView.setSpriteImage(image, tilesX: tilesX, tilesY: tilesY)
+        
+        // Make sure the frame dimensions are calculated
+        frameWidth = 40
+        frameHeight = 40
+        window.setContentSize(NSSize(width: frameWidth, height: frameHeight))
+        sheepView.setFrameSize(NSSize(width: frameWidth, height: frameHeight))
+    }
+    
+    func start() {
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        
+        // Position at random location on screen
+        if let screen = NSScreen.main {
+            let screenFrame = screen.visibleFrame
+            position.x = CGFloat.random(in: 0...(screenFrame.width - frameWidth))
+            position.y = CGFloat.random(in: 0...(screenFrame.height - frameHeight))
+            updateWindowPosition()
+        }
+    }
+    
+    private func startAnimation(withId animationId: String) {
+        guard let animation = animations[animationId] else {
+            print("Animation \(animationId) not found")
+            return
+        }
+        
+        currentAnimation = animation
+        currentAnimationStep = 0
+        
+        // Start animation timer
+        animationTimer?.invalidate()
+        animationTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            self?.updateAnimation()
+        }
+    }
+    
+    private func updateAnimation() {
+        guard let animation = currentAnimation else { return }
+        
+        if isDragging {
+            // Show drag animation frame
+            sheepView.setFrame(2)
+            return
+        }
+        
+        // Get current frame
+        let frameIndex = animation.getFrameAtStep(currentAnimationStep)
+        sheepView.setFrame(frameIndex)
+        
+        // Update position based on movement
+        let progress = CGFloat(currentAnimationStep) / CGFloat(animation.getTotalSteps())
+        let moveX = animation.movement.startX + (animation.movement.endX - animation.movement.startX) * progress
+        let moveY = animation.movement.startY + (animation.movement.endY - animation.movement.startY) * progress
+        
+        if !isDragging {
+            if isFlipped {
+                position.x -= moveX
+            } else {
+                position.x += moveX
+            }
+            position.y += moveY
+            
+            // Check screen boundaries
+            if let screen = NSScreen.main {
+                let screenFrame = screen.visibleFrame
+                
+                // Handle screen edges
+                if position.x <= 0 || position.x >= screenFrame.width - frameWidth {
+                    // Hit horizontal edge - flip
+                    handleFlip()
+                    position.x = max(0, min(position.x, screenFrame.width - frameWidth))
+                }
+                
+                if position.y <= 0 {
+                    position.y = 0
+                    // Start walk animation when hitting bottom
+                    if animation.hasGravity {
+                        startAnimation(withId: "0")
+                        return
+                    }
+                } else if position.y >= screenFrame.height - frameHeight {
+                    position.y = screenFrame.height - frameHeight
+                }
+            }
+            
+            updateWindowPosition()
+        }
+        
+        // Move to next step
+        currentAnimationStep += 1
+        
+        // Check if animation is complete
+        if currentAnimationStep >= animation.getTotalSteps() {
+            // Handle animation action if any
+            if let action = animation.action {
+                switch action {
+                case "flip":
+                    handleFlip()
+                default:
+                    break
+                }
+            }
+            
+            // Transition to next animation
+            if let nextAnimationId = animation.getNextAnimation() {
+                startAnimation(withId: nextAnimationId)
+            } else {
+                // Restart from beginning
+                startAnimation(withId: "0")
+            }
+        }
+    }
+    
+    private func handleFlip() {
+        isFlipped = !isFlipped
+        sheepView.setFlipped(isFlipped)
+    }
+    
+    private func updateWindowPosition() {
+        window.setFrameOrigin(position)
+    }
+    
+    private func handleMouseDown() {
+        isDragging = true
+        animationTimer?.invalidate()
+    }
+    
+    private func handleMouseDragged(to screenLocation: NSPoint) {
+        if isDragging {
+            position = NSPoint(
+                x: screenLocation.x - frameWidth / 2,
+                y: screenLocation.y - frameHeight / 2
+            )
+            updateWindowPosition()
+        }
+    }
+    
+    private func handleMouseUp() {
+        isDragging = false
+        
+        // Check if sheep should fall
+        if let screen = NSScreen.main {
+            let screenFrame = screen.visibleFrame
+            if position.y > 0 {
+                // Start fall animation
+                startAnimation(withId: "3")
+            } else {
+                // Start walk animation
+                startAnimation(withId: "0")
+            }
+        }
+    }
+    
+    func stop() {
+        animationTimer?.invalidate()
+        animationTimer = nil
+        window.close()
+    }
+}

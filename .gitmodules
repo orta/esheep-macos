@@ -1,0 +1,3 @@
+[submodule "vendor/web-esheep"]
+	path = vendor/web-esheep
+	url = https://github.com/Adrianotiger/web-esheep
