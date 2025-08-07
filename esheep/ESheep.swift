@@ -14,8 +14,9 @@ class ESheep {
     private var currentAnimation: ESheepAnimation?
     private var currentAnimationStep: Int = 0
     private var animationTimer: Timer?
+    private var platformRefreshTimer: Timer?
     
-    private var position: NSPoint = NSPoint(x: 100, y: 100)
+    private var position: NSPoint = NSPoint(x: 100, y: 300)  // Start higher up
     private var isFlipped: Bool = true  // Start flipped since default movement is rightward
     private var isDragging: Bool = false
     
@@ -23,6 +24,16 @@ class ESheep {
     private var tilesY: Int = 11
     private var frameWidth: CGFloat = 40
     private var frameHeight: CGFloat = 40
+    
+    // Physics properties
+    private var velocityY: CGFloat = 0
+    private let gravity: CGFloat = 0.5
+    private let maxFallSpeed: CGFloat = 10
+    private var isOnPlatform: Bool = false
+    private var currentPlatform: ESheepPlatform?
+    
+    // Platform manager
+    private let platformManager = ESheepPlatformManager()
     
     init() {
         setupWindow()
@@ -143,15 +154,23 @@ class ESheep {
     }
     
     func start() {
+        // Create platforms based on actual windows
+        platformManager.createWindowPlatforms()
+        
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
         
-        // Position at random location on screen
+        // Position at random location on screen (start higher up)
         if let screen = NSScreen.main {
             let screenFrame = screen.visibleFrame
             position.x = CGFloat.random(in: 0...(screenFrame.width - frameWidth))
-            position.y = CGFloat.random(in: 0...(screenFrame.height - frameHeight))
+            position.y = CGFloat.random(in: screenFrame.height/2...(screenFrame.height - frameHeight))
             updateWindowPosition()
+        }
+        
+        // Start platform refresh timer to update window positions periodically
+        platformRefreshTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.platformManager.createWindowPlatforms()
         }
     }
     
@@ -184,18 +203,82 @@ class ESheep {
         let frameIndex = animation.getFrameAtStep(currentAnimationStep)
         sheepView.setFrame(frameIndex)
         
-        // Update position based on movement
+        // Check for platform collision
+        let sheepFrame = NSRect(x: position.x, y: position.y, width: frameWidth, height: frameHeight)
+        let platformBelow = platformManager.getPlatformUnderSheep(sheepFrame: sheepFrame)
+        
+        // Apply gravity if not on a platform
+        if platformBelow == nil {
+            // Check if there's a platform we could fall onto
+            let platformTarget = platformManager.getPlatformBelow(position: NSPoint(x: position.x + frameWidth/2, y: position.y))
+            
+            if platformTarget != nil || position.y > 0 {
+                // Apply gravity - we're falling
+                velocityY -= gravity
+                velocityY = max(velocityY, -maxFallSpeed)
+                position.y += velocityY
+                
+                // Check if we've landed on a platform
+                if let platform = platformTarget {
+                    if position.y <= platform.top {
+                        position.y = platform.top
+                        velocityY = 0
+                        isOnPlatform = true
+                        currentPlatform = platform
+                        
+                        // Switch to walk animation when landing
+                        if animation.name == "fall" {
+                            startAnimation(withId: "0")
+                            return
+                        }
+                    }
+                }
+                
+                // Check if we hit the ground
+                if position.y <= 0 {
+                    position.y = 0
+                    velocityY = 0
+                    isOnPlatform = false
+                    currentPlatform = nil
+                }
+            }
+        } else {
+            // We're on a platform
+            isOnPlatform = true
+            currentPlatform = platformBelow
+            velocityY = 0
+        }
+        
+        // Update horizontal position based on movement
         let progress = CGFloat(currentAnimationStep) / CGFloat(animation.getTotalSteps())
         let moveX = animation.movement.startX + (animation.movement.endX - animation.movement.startX) * progress
         let moveY = animation.movement.startY + (animation.movement.endY - animation.movement.startY) * progress
         
-        if !isDragging {
+        if !isDragging && velocityY == 0 {  // Only move horizontally if not falling
             if isFlipped {
                 position.x += moveX  // When flipped (facing right), move right
             } else {
                 position.x -= moveX  // When not flipped (facing left), move left
             }
-            position.y += moveY
+            // Only apply vertical movement if we're on solid ground
+            if isOnPlatform || position.y <= 0 {
+                position.y += moveY
+            }
+            
+            // Check if sheep walked off the edge of a platform
+            if isOnPlatform && currentPlatform != nil {
+                let sheepCenter = position.x + frameWidth / 2
+                if sheepCenter < currentPlatform!.frame.minX || sheepCenter > currentPlatform!.frame.maxX {
+                    // Walked off the edge - start falling
+                    isOnPlatform = false
+                    currentPlatform = nil
+                    velocityY = 0
+                    
+                    // Switch to fall animation
+                    startAnimation(withId: "3")
+                    return
+                }
+            }
             
             // Check screen boundaries
             if let screen = NSScreen.main {
@@ -208,20 +291,13 @@ class ESheep {
                     position.x = max(0, min(position.x, screenFrame.width - frameWidth))
                 }
                 
-                if position.y <= 0 {
-                    position.y = 0
-                    // Start walk animation when hitting bottom
-                    if animation.hasGravity {
-                        startAnimation(withId: "0")
-                        return
-                    }
-                } else if position.y >= screenFrame.height - frameHeight {
+                if position.y >= screenFrame.height - frameHeight {
                     position.y = screenFrame.height - frameHeight
                 }
             }
-            
-            updateWindowPosition()
         }
+        
+        updateWindowPosition()
         
         // Move to next step
         currentAnimationStep += 1
@@ -275,23 +351,35 @@ class ESheep {
     
     private func handleMouseUp() {
         isDragging = false
+        velocityY = 0  // Reset velocity after dragging
         
-        // Check if sheep should fall
-        if let screen = NSScreen.main {
-            let screenFrame = screen.visibleFrame
-            if position.y > 0 {
-                // Start fall animation
-                startAnimation(withId: "3")
-            } else {
-                // Start walk animation
-                startAnimation(withId: "0")
-            }
+        // Check if we're on a platform
+        let sheepFrame = NSRect(x: position.x, y: position.y, width: frameWidth, height: frameHeight)
+        let platformBelow = platformManager.getPlatformUnderSheep(sheepFrame: sheepFrame)
+        
+        if platformBelow != nil {
+            // On a platform - start walking
+            isOnPlatform = true
+            currentPlatform = platformBelow
+            startAnimation(withId: "0")
+        } else if position.y > 0 {
+            // Not on platform and not on ground - start falling
+            isOnPlatform = false
+            currentPlatform = nil
+            startAnimation(withId: "3")
+        } else {
+            // On ground - start walking
+            isOnPlatform = false
+            currentPlatform = nil
+            startAnimation(withId: "0")
         }
     }
     
     func stop() {
         animationTimer?.invalidate()
         animationTimer = nil
+        platformRefreshTimer?.invalidate()
+        platformRefreshTimer = nil
         window.close()
     }
 }
