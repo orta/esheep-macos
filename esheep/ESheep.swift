@@ -14,7 +14,7 @@ class ESheep {
     private var currentAnimation: ESheepAnimation?
     private var currentAnimationStep: Int = 0
     private var animationTimer: Timer?
-    private var platformRefreshTimer: Timer?
+    private static var platformRefreshTimer: Timer?
     
     private var position: NSPoint = NSPoint(x: 100, y: 300)  // Start higher up
     private var isFlipped: Bool = true  // Start flipped since default movement is rightward
@@ -32,8 +32,26 @@ class ESheep {
     private var isOnPlatform: Bool = false
     private var currentPlatform: ESheepPlatform?
     
-    // Platform manager
-    private let platformManager = ESheepPlatformManager()
+    // Edge behavior properties
+    private var isConfused: Bool = false
+    private var confusedStartTime: TimeInterval = 0
+    private let confusedDuration: TimeInterval = 2.0 // 2 seconds of confusion
+    private var isAtEdge: Bool = false
+    
+    // Bottom teleport properties
+    private var timeAtBottom: TimeInterval = 0
+    private var isAtBottom: Bool = false
+    private let bottomTeleportDelay: TimeInterval = 30.0 // 30 seconds
+    
+    // Platform manager - shared across all sheep instances
+    private static let sharedPlatformManager = ESheepPlatformManager()
+    private var platformManager: ESheepPlatformManager {
+        return ESheep.sharedPlatformManager
+    }
+    
+    // Shared settings
+    private static var showPlatforms: Bool = true
+    private static var frontmostAppOnly: Bool = false
     
     init() {
         setupWindow()
@@ -154,8 +172,10 @@ class ESheep {
     }
     
     func start() {
-        // Create platforms based on actual windows
-        platformManager.createWindowPlatforms()
+        // Create platforms based on actual windows (only if not already initialized)
+        if platformManager.allPlatforms.isEmpty {
+            platformManager.createWindowPlatforms()
+        }
         
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
@@ -168,9 +188,11 @@ class ESheep {
             updateWindowPosition()
         }
         
-        // Start platform refresh timer to update window positions periodically
-        platformRefreshTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            self?.platformManager.createWindowPlatforms()
+        // Start platform refresh timer to update window positions periodically (only once)
+        if ESheep.platformRefreshTimer == nil {
+            ESheep.platformRefreshTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
+                ESheep.sharedPlatformManager.createWindowPlatforms()
+            }
         }
     }
     
@@ -265,13 +287,68 @@ class ESheep {
                 position.y += moveY
             }
             
-            // Check if sheep walked off the edge of a platform
+            // Check if sheep is at the edge of a platform
             if isOnPlatform && currentPlatform != nil {
                 let sheepCenter = position.x + frameWidth / 2
-                if sheepCenter < currentPlatform!.frame.minX || sheepCenter > currentPlatform!.frame.maxX {
-                    // Walked off the edge - start falling
+                let platformLeft = currentPlatform!.frame.minX
+                let platformRight = currentPlatform!.frame.maxX
+                let edgeThreshold: CGFloat = 20 // How close to edge before getting confused
+                
+                let nearLeftEdge = sheepCenter < platformLeft + edgeThreshold
+                let nearRightEdge = sheepCenter > platformRight - edgeThreshold
+                let atEdge = nearLeftEdge || nearRightEdge
+                
+                if atEdge && !isAtEdge && !isConfused {
+                    // Just reached edge - start confusion
+                    isAtEdge = true
+                    isConfused = true
+                    confusedStartTime = CFAbsoluteTimeGetCurrent()
+                    print("ESheep: Sheep confused at platform edge")
+                    
+                    // Switch to a stationary animation (or create a confused animation)
+                    // For now, we'll keep the current frame static
+                    return
+                } else if !atEdge {
+                    isAtEdge = false
+                }
+                
+                // Handle confusion timeout
+                if isConfused {
+                    let currentTime = CFAbsoluteTimeGetCurrent()
+                    if currentTime - confusedStartTime >= confusedDuration {
+                        // End confusion - make decision
+                        isConfused = false
+                        isAtEdge = false
+                        
+                        let shouldJump = Bool.random() // 50% chance to jump, 50% to turn around
+                        
+                        if shouldJump {
+                            // Jump down
+                            print("ESheep: Sheep decides to jump down")
+                            isOnPlatform = false
+                            currentPlatform = nil
+                            velocityY = -1 // Small initial downward velocity
+                            startAnimation(withId: "3") // Fall animation
+                            return
+                        } else {
+                            // Turn around
+                            print("ESheep: Sheep decides to turn around")
+                            handleFlip()
+                            // Continue with walk animation
+                        }
+                    } else {
+                        // Still confused - don't move
+                        return
+                    }
+                }
+                
+                // Check if sheep actually walked off the platform (past the edge threshold)
+                if sheepCenter < platformLeft - 5 || sheepCenter > platformRight + 5 {
+                    // Walked too far off - force fall
                     isOnPlatform = false
                     currentPlatform = nil
+                    isConfused = false
+                    isAtEdge = false
                     velocityY = 0
                     
                     // Switch to fall animation
@@ -286,13 +363,49 @@ class ESheep {
                 
                 // Handle screen edges
                 if position.x <= 0 || position.x >= screenFrame.width - frameWidth {
-                    // Hit horizontal edge - flip
-                    handleFlip()
-                    position.x = max(0, min(position.x, screenFrame.width - frameWidth))
+                    // At horizontal edge - get confused like platform edges
+                    if !isConfused && !isAtEdge {
+                        isAtEdge = true
+                        isConfused = true
+                        confusedStartTime = CFAbsoluteTimeGetCurrent()
+                        print("ESheep: Sheep confused at screen edge")
+                        return
+                    }
+                    
+                    // If confusion ended or forced movement
+                    if !isConfused {
+                        handleFlip()
+                        position.x = max(0, min(position.x, screenFrame.width - frameWidth))
+                    }
                 }
                 
                 if position.y >= screenFrame.height - frameHeight {
                     position.y = screenFrame.height - frameHeight
+                }
+                
+                // Handle bottom teleport
+                let bottomThreshold: CGFloat = 50 // Consider "at bottom" if within 50 pixels of ground
+                if position.y <= bottomThreshold && !isOnPlatform {
+                    if !isAtBottom {
+                        // Just reached bottom
+                        isAtBottom = true
+                        timeAtBottom = CFAbsoluteTimeGetCurrent()
+                        print("ESheep: Sheep reached bottom, starting timer")
+                    } else {
+                        // Check if time to teleport
+                        let currentTime = CFAbsoluteTimeGetCurrent()
+                        if currentTime - timeAtBottom >= bottomTeleportDelay {
+                            // Teleport to random position near top
+                            position.x = CGFloat.random(in: 0...(screenFrame.width - frameWidth))
+                            position.y = screenFrame.height * 0.8 // 80% up the screen
+                            velocityY = 0
+                            isAtBottom = false
+                            print("ESheep: Teleporting sheep from bottom to top at x=\(position.x)")
+                        }
+                    }
+                } else if position.y > bottomThreshold {
+                    // No longer at bottom
+                    isAtBottom = false
                 }
             }
         }
@@ -378,8 +491,23 @@ class ESheep {
     func stop() {
         animationTimer?.invalidate()
         animationTimer = nil
+        window.close()
+    }
+    
+    static func stopAllSharedResources() {
         platformRefreshTimer?.invalidate()
         platformRefreshTimer = nil
-        window.close()
+    }
+    
+    static func setPlatformVisibility(_ visible: Bool) {
+        showPlatforms = visible
+        sharedPlatformManager.setPlatformVisibility(visible)
+    }
+    
+    static func setFrontmostAppOnly(_ frontmostOnly: Bool) {
+        frontmostAppOnly = frontmostOnly
+        sharedPlatformManager.setFrontmostAppOnly(frontmostOnly)
+        // Refresh platforms with new setting
+        sharedPlatformManager.createWindowPlatforms()
     }
 }

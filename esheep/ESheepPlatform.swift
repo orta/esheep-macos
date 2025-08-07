@@ -88,6 +88,8 @@ class ESheepPlatform {
 // Manager class for all platforms
 class ESheepPlatformManager {
     private var platforms: [ESheepPlatform] = []
+    private var showPlatforms: Bool = true
+    private var frontmostAppOnly: Bool = false
     
     func createRandomPlatforms(count: Int = 5) {
         // Clear existing platforms
@@ -130,75 +132,133 @@ class ESheepPlatformManager {
         print("ESheep: Found \(windowList.count) total windows from system")
         var windowCount = 0
         
+        // Get frontmost application if in frontmost app only mode
+        var frontmostAppNames: Set<String> = []
+        if frontmostAppOnly {
+            if let frontmostApp = NSWorkspace.shared.frontmostApplication {
+                if let appName = frontmostApp.localizedName {
+                    frontmostAppNames.insert(appName)
+                    
+                    // Add common name variations based on bundle ID
+                    if let bundleId = frontmostApp.bundleIdentifier {
+                        switch bundleId {
+                        case "com.microsoft.VSCode":
+                            frontmostAppNames.insert("Visual Studio Code")
+                        case "com.googlecode.iterm2":
+                            frontmostAppNames.insert("iTerm")
+                        default:
+                            break
+                        }
+                    }
+                    
+                    print("ESheep: Frontmost app: \(appName) - looking for windows with names: \(frontmostAppNames.sorted())")
+                } else {
+                    print("ESheep: No frontmost application found")
+                }
+            } else {
+                print("ESheep: Unable to get frontmost application")
+            }
+        }
+        
+        print("ESheep: Processing windows (frontmost app only: \(frontmostAppOnly))")
+        
         for (index, windowInfo) in windowList.enumerated() {
             let appName = windowInfo[kCGWindowOwnerName as String] as? String ?? "Unknown"
             let windowName = windowInfo[kCGWindowName as String] as? String ?? ""
-            print("ESheep: Processing window \(index + 1)/\(windowList.count): \(appName) - \(windowName)")
+            let windowLayer = windowInfo[kCGWindowLayer as String] as? Int ?? 0
             
-            // Check if window can be read (same filtering as SonofGrab)
-            // kCGWindowSharingNone = 0 (windows that cannot be read)
-            let sharingState = windowInfo[kCGWindowSharingState as String] as? Int ?? -1
-            print("ESheep: Window \(index + 1) - sharing state: \(sharingState)")
+            print("ESheep: Processing window \(index + 1)/\(windowList.count): \(appName) - '\(windowName)' (layer: \(windowLayer))")
             
-            // Try to process all windows, regardless of sharing state
-            // We'll filter by bounds and size instead
-            if true {
-                // Get window bounds
-                if let boundsDict = windowInfo[kCGWindowBounds as String] as? [String: AnyObject] {
-                    var windowBounds = CGRect.zero
-                    if CGRectMakeWithDictionaryRepresentation(boundsDict as CFDictionary, &windowBounds) {
-                        print("ESheep: Window \(index + 1) - bounds: \(windowBounds)")
+            // Skip system apps and UI elements
+            let systemApps = ["Window Server", "Dock", "SystemUIServer", "ControlCenter", "NotificationCenter", "Spotlight"]
+            if systemApps.contains(appName) {
+                print("ESheep: Skipping system app: \(appName)")
+                continue
+            }
+            
+            // Skip our own control window
+            if appName == "esheep" {
+                print("ESheep: Skipping our own window")
+                continue
+            }
+            
+            // In frontmost app only mode, only show windows from the frontmost application
+            if frontmostAppOnly {
+                if !frontmostAppNames.contains(appName) {
+                    print("ESheep: Skipping \(appName) - not the frontmost app")
+                    continue
+                }
+                
+                // Allow all layers for frontmost app (including menus if needed)
+                print("ESheep: Accepting window from frontmost app \(appName) (named: '\(windowName)' layer: \(windowLayer))")
+            }
+            
+            // Get window bounds
+            if let boundsDict = windowInfo[kCGWindowBounds as String] as? [String: AnyObject] {
+                var windowBounds = CGRect.zero
+                if CGRectMakeWithDictionaryRepresentation(boundsDict as CFDictionary, &windowBounds) {
+                    print("ESheep: Window \(index + 1) - bounds: \(windowBounds)")
+                    
+                    // Use standard size filtering
+                    let minSize: CGFloat = 50
+                    if windowBounds.width >= minSize && windowBounds.height >= minSize {
+                        print("ESheep: Window \(index + 1) - passed size filter (min: \(minSize))")
                         
-                        // Filter out very small windows (less than 50x50)
-                        if windowBounds.width >= 50 && windowBounds.height >= 50 {
-                            print("ESheep: Window \(index + 1) - passed size filter")
-                            // Convert from Quartz coordinates to AppKit screen coordinates
-                            // Quartz: origin at bottom-left, Y increases upward
-                            // AppKit: origin at top-left, Y increases downward
-                            guard let screen = NSScreen.main else { continue }
-                            let screenHeight = screen.frame.height
-                            
-                            // Convert window bounds to AppKit coordinates
-                            // In Quartz: windowBounds.minY is the bottom, windowBounds.maxY is the top
-                            // In AppKit: we want the platform to sit ON TOP of the window (above title bar)
-                            let platformHeight: CGFloat = 10
-                            // Convert window's TOP edge from Quartz to AppKit coordinates
-                            let appKitWindowTop = screenHeight - windowBounds.maxY
-                            // Place platform ON TOP of the window (add window height and subtract platform height to align tops)
-                            let platformY = appKitWindowTop + windowBounds.height - platformHeight
-                            
-                            let platformFrame = NSRect(
-                                x: windowBounds.minX,
-                                y: platformY, // Position platform above window top
-                                width: windowBounds.width,
-                                height: platformHeight
-                            )
-                            
-                            print("ESheep: Creating platform at \(platformFrame) for Quartz window \(windowBounds) (screen height: \(screenHeight))")
-                            
-                            let platform = ESheepPlatform(frame: platformFrame)
-                            platforms.append(platform)
-                            windowCount += 1
-                            
-                            // Debug: get application name if available
-                            if let appName = windowInfo[kCGWindowOwnerName as String] as? String {
-                                print("ESheep: Created platform on \(appName) window at \(windowBounds)")
-                            }
-                        } else {
-                            print("ESheep: Window \(index + 1) - filtered out (too small: \(windowBounds.width)x\(windowBounds.height))")
-                        }
+                        // Convert from Quartz coordinates to AppKit screen coordinates
+                        guard let screen = NSScreen.main else { continue }
+                        let screenHeight = screen.frame.height
+                        
+                        // Convert window bounds to AppKit coordinates
+                        let platformHeight: CGFloat = 10
+                        let appKitWindowTop = screenHeight - windowBounds.maxY
+                        let platformY = appKitWindowTop + windowBounds.height - platformHeight
+                        
+                        let platformFrame = NSRect(
+                            x: windowBounds.minX,
+                            y: platformY,
+                            width: windowBounds.width,
+                            height: platformHeight
+                        )
+                        
+                        print("ESheep: Creating platform at \(platformFrame) for \(appName) window '\(windowName)'")
+                        
+                        let platform = ESheepPlatform(frame: platformFrame)
+                        platforms.append(platform)
+                        windowCount += 1
                     } else {
-                        print("ESheep: Window \(index + 1) - failed to parse bounds")
+                        print("ESheep: Window \(index + 1) - filtered out (too small: \(windowBounds.width)x\(windowBounds.height), min: \(minSize))")
                     }
                 } else {
-                    print("ESheep: Window \(index + 1) - no bounds dictionary")
+                    print("ESheep: Window \(index + 1) - failed to parse bounds")
                 }
             } else {
-                print("ESheep: Window \(index + 1) - filtered out (sharing state: \(sharingState))")
+                print("ESheep: Window \(index + 1) - no bounds dictionary")
             }
         }
         
         print("ESheep: Created \(platforms.count) window platforms from \(windowCount) windows")
+        
+        // Update visibility based on current setting
+        updatePlatformVisibility()
+    }
+    
+    func setPlatformVisibility(_ visible: Bool) {
+        showPlatforms = visible
+        updatePlatformVisibility()
+    }
+    
+    func setFrontmostAppOnly(_ frontmostOnly: Bool) {
+        frontmostAppOnly = frontmostOnly
+    }
+    
+    private func updatePlatformVisibility() {
+        for platform in platforms {
+            if showPlatforms {
+                platform.show()
+            } else {
+                platform.hide()
+            }
+        }
     }
     
     // Check if sheep is on any platform
