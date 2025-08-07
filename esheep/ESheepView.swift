@@ -69,11 +69,7 @@ class ESheepView: NSView {
             return 
         }
         
-        // Only log occasionally to reduce console spam
-        if currentFrame == 0 {
-            print("ESheepView: Drawing with flip=\(isFlippedImage)")
-        }
-        
+      
         let context = NSGraphicsContext.current?.cgContext
         context?.saveGState()
         

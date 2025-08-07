@@ -510,4 +510,8 @@ class ESheep {
         // Refresh platforms with new setting
         sharedPlatformManager.createWindowPlatforms()
     }
+    
+    static func setDebugLogging(_ enabled: Bool) {
+        ESheepPlatformManager.setDebugLogging(enabled)
+    }
 }
